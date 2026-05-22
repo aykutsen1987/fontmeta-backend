@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: fontmeta-backend
+    runtime: node
+    plan: free          # upgrade to starter for always-on
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GEMINI_API_KEY
+        sync: false       # set this in Render dashboard → Environment
+      - key: GROQ_API_KEY
+        sync: false       # set this in Render dashboard → Environment
+      - key: RATE_LIMIT_MAX
+        value: "30"
+    healthCheckPath: /health
+    autoDeploy: true
