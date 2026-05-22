@@ -1,8 +1,8 @@
 const express = require('express');
-const sharp = require('sharp');
-const { upload } = require('../middleware/upload');
+const sharp   = require('sharp');
+const { upload }           = require('../middleware/upload');
 const { analyzeWithGemini } = require('../providers/gemini');
-const { analyzeWithGroq } = require('../providers/groq');
+const { analyzeWithGroq }   = require('../providers/groq');
 
 const router = express.Router();
 
@@ -18,8 +18,10 @@ const router = express.Router();
 //  2. application/json
 //     - { "image": "<base64 string>", "mimeType": "image/jpeg", "provider": "gemini" }
 //
-// Returns:
-//   { "provider": "gemini", "result": { ...font JSON... } }
+// DEĞİŞİKLİKLER (v2):
+// - Android zaten 1024px resize yapıyor → backend resize KALDIRILDI (double-resize yok)
+//   Sadece JPEG'e çevirme yapılır, boyut küçültülmez.
+// - Hata mesajları daha açık
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/analyze', upload.single('image'), async (req, res) => {
   try {
@@ -29,18 +31,15 @@ router.post('/analyze', upload.single('image'), async (req, res) => {
 
     // ── Determine input format ───────────────────────────────────────────────
     if (req.file) {
-      // Multipart upload
       imageBuffer = req.file.buffer;
-      mimeType = req.file.mimetype;
-      provider = (req.body?.provider || 'gemini').toLowerCase().trim();
+      mimeType    = req.file.mimetype;
+      provider    = (req.body?.provider || 'gemini').toLowerCase().trim();
     } else if (req.body?.image) {
-      // JSON body with base64 image
       const base64Raw = req.body.image;
-      // Strip data-URI prefix if present (data:image/jpeg;base64,...)
-      const stripped = base64Raw.replace(/^data:[^;]+;base64,/, '');
-      imageBuffer = Buffer.from(stripped, 'base64');
-      mimeType = req.body.mimeType || 'image/jpeg';
-      provider = (req.body.provider || 'gemini').toLowerCase().trim();
+      const stripped  = base64Raw.replace(/^data:[^;]+;base64,/, '');
+      imageBuffer     = Buffer.from(stripped, 'base64');
+      mimeType        = req.body.mimeType || 'image/jpeg';
+      provider        = (req.body.provider || 'gemini').toLowerCase().trim();
     } else {
       return res.status(400).json({ error: 'Görsel bulunamadı. "image" alanı zorunludur.' });
     }
@@ -50,14 +49,21 @@ router.post('/analyze', upload.single('image'), async (req, res) => {
       return res.status(400).json({ error: `Geçersiz provider: "${provider}". "gemini" veya "groq" kullanın.` });
     }
 
-    // ── Resize + optimise image before sending to AI ─────────────────────────
-    // Max 1024px on longest side, convert to JPEG to reduce token cost
-    const optimised = await sharp(imageBuffer)
-      .resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: 85 })
-      .toBuffer();
-
-    const base64Image = optimised.toString('base64');
+    // ── Sadece JPEG'e çevir, yeniden boyutlandırma YOK ──────────────────────
+    // Android istemci zaten 1024px'e düşürüp JPEG yapıyor.
+    // Burada tekrar resize yapmak: (a) kalite kaybı, (b) gereksiz CPU.
+    // Yalnızca JPEG olmayan formatları (PNG, WebP) JPEG'e çeviriyoruz.
+    let base64Image;
+    if (mimeType === 'image/jpeg') {
+      // Zaten JPEG — direkt base64'e çevir
+      base64Image = imageBuffer.toString('base64');
+    } else {
+      // PNG/WebP → JPEG dönüşümü (boyut değiştirme yok)
+      const converted = await sharp(imageBuffer)
+        .jpeg({ quality: 90 })
+        .toBuffer();
+      base64Image = converted.toString('base64');
+    }
     const finalMime = 'image/jpeg';
 
     // ── Call the selected provider ───────────────────────────────────────────
@@ -69,9 +75,9 @@ router.post('/analyze', upload.single('image'), async (req, res) => {
     }
 
     // ── Validate response shape ──────────────────────────────────────────────
-    if (!result?.tahminler || !Array.isArray(result.tahminler)) {
+    if (!result?.tahminler || !Array.isArray(result.tahminler) || result.tahminler.length === 0) {
       return res.status(502).json({
-        error: 'AI modeli beklenen formatta yanıt vermedi.',
+        error: 'AI modeli beklenen formatta yanıt vermedi (tahminler listesi eksik).',
         raw: result,
       });
     }
@@ -80,8 +86,6 @@ router.post('/analyze', upload.single('image'), async (req, res) => {
 
   } catch (err) {
     console.error('[/api/analyze]', err.message);
-
-    // Pass provider-level errors back with a clear message
     const status = err.message.includes('API hatası') ? 502 : 500;
     return res.status(status).json({ error: err.message });
   }
@@ -89,7 +93,6 @@ router.post('/analyze', upload.single('image'), async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/providers
-// Returns which providers are currently configured on the server.
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/providers', (_req, res) => {
   res.json({
