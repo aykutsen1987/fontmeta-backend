@@ -2,15 +2,24 @@ const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...ar
 const { FONT_ANALYSIS_PROMPT } = require('../prompt');
 
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL   = 'meta-llama/llama-4-scout-17b-16e-instruct';
+
+// Model öncelik sırası: önce güçlü vision modeli dene, hata alırsa fallback.
+// llama-4-maverick: 128K kontekst, daha güçlü görsel anlama
+// llama-4-scout   : yedek (quota/availability sorunu olursa)
+const GROQ_MODELS = [
+  'meta-llama/llama-4-maverick-17b-128e-instruct',
+  'meta-llama/llama-4-scout-17b-16e-instruct',
+];
 
 /**
  * Analyse a font image using Groq Llama vision model.
  *
- * DEĞİŞİKLİKLER (v2):
- * - max_tokens 1024 → 2048 (kesilmiş JSON hatasını önler)
- * - parseJsonResponse Gemini ile aynı sağlam hale getirildi
- * - system prompt eklendi: "sadece JSON döndür" talimatı model seviyesinde de var
+ * DEĞİŞİKLİKLER (v3):
+ * - Model: scout → maverick (daha güçlü görsel analiz, Times/serif fontları tanır)
+ * - Fallback: maverick başarısız olursa scout'a düşer
+ * - max_tokens: 2048 → 3000
+ * - System prompt güçlendirildi: font tespiti odaklı
+ * - parseJsonResponse aynı sağlam yapı korundu
  */
 async function analyzeWithGroq(base64Image, mimeType) {
   const apiKey = process.env.GROQ_API_KEY;
@@ -18,59 +27,79 @@ async function analyzeWithGroq(base64Image, mimeType) {
 
   const dataUri = `data:${mimeType};base64,${base64Image}`;
 
-  const body = {
-    model: GROQ_MODEL,
-    temperature: 0.1,
-    max_tokens: 2048, // ← 1024'ten artırıldı
-    response_format: { type: 'json_object' },
-    messages: [
-      {
-        // System prompt: modeli saf JSON moduna al
-        role: 'system',
-        content: 'You are a typography expert. You MUST respond with ONLY a valid JSON object. No markdown, no explanation, no text outside the JSON.',
-      },
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'image_url',
-            image_url: { url: dataUri },
-          },
-          {
-            type: 'text',
-            text: FONT_ANALYSIS_PROMPT,
-          },
-        ],
-      },
-    ],
-  };
+  let lastError = null;
 
-  const response = await fetch(GROQ_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
+  for (const model of GROQ_MODELS) {
+    const body = {
+      model,
+      temperature: 0.1,
+      max_tokens: 3000,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You are an expert typographer and font identification specialist. ' +
+            'You MUST respond with ONLY a valid JSON object — no markdown, no explanation, ' +
+            'no text outside the JSON. ' +
+            'You can identify both serif fonts (Times New Roman, Georgia, Garamond, Palatino, ' +
+            'Cambria, Didot, Bodoni) and sans-serif fonts (Arial, Helvetica, Roboto, ' +
+            'Segoe UI, Open Sans, Lato, Montserrat) as well as Display, Script, and Monospace fonts. ' +
+            'Always examine letter serifs carefully before making a decision.',
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image_url',
+              image_url: { url: dataUri },
+            },
+            {
+              type: 'text',
+              text: FONT_ANALYSIS_PROMPT,
+            },
+          ],
+        },
+      ],
+    };
 
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Groq API hatası ${response.status}: ${errText}`);
+    const response = await fetch(GROQ_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      lastError = new Error(`Groq API hatası ${response.status} (${model}): ${errText}`);
+      // 429 (rate limit) veya 503 (model unavailable) → sonraki modele geç
+      if (response.status === 429 || response.status === 503 || response.status === 404) {
+        continue;
+      }
+      throw lastError;
+    }
+
+    const data = await response.json();
+    const rawText = data?.choices?.[0]?.message?.content;
+    if (!rawText) {
+      lastError = new Error(`Groq boş yanıt döndürdü (${model}).`);
+      continue;
+    }
+
+    return parseJsonResponse(rawText);
   }
 
-  const data = await response.json();
-
-  const rawText = data?.choices?.[0]?.message?.content;
-  if (!rawText) throw new Error('Groq boş yanıt döndürdü.');
-
-  return parseJsonResponse(rawText);
+  // Tüm modeller başarısız
+  throw lastError ?? new Error('Groq: kullanılabilir model bulunamadı.');
 }
 
 /**
  * Safely parse the model's text as JSON.
  * Handles: markdown fences, BOM characters, surrounding text.
- */
+*/
 function parseJsonResponse(text) {
   let cleaned = text.replace(/^\uFEFF/, '').trim();
 
