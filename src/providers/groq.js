@@ -2,14 +2,15 @@ const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...ar
 const { FONT_ANALYSIS_PROMPT } = require('../prompt');
 
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL = 'meta-llama/llama-4-scout-17b-16e-instruct'; // best vision model on Groq as of 2025
+const GROQ_MODEL   = 'meta-llama/llama-4-scout-17b-16e-instruct';
 
 /**
  * Analyse a font image using Groq Llama vision model.
  *
- * @param {string} base64Image  - base64-encoded image (no data-URI prefix)
- * @param {string} mimeType     - e.g. "image/jpeg" | "image/png" | "image/webp"
- * @returns {Promise<object>}   - parsed JSON result from the model
+ * DEĞİŞİKLİKLER (v2):
+ * - max_tokens 1024 → 2048 (kesilmiş JSON hatasını önler)
+ * - parseJsonResponse Gemini ile aynı sağlam hale getirildi
+ * - system prompt eklendi: "sadece JSON döndür" talimatı model seviyesinde de var
  */
 async function analyzeWithGroq(base64Image, mimeType) {
   const apiKey = process.env.GROQ_API_KEY;
@@ -20,10 +21,14 @@ async function analyzeWithGroq(base64Image, mimeType) {
   const body = {
     model: GROQ_MODEL,
     temperature: 0.1,
-    max_tokens: 1024,
-    // Force JSON output — Groq OpenAI-compatible endpoint supports this
+    max_tokens: 2048, // ← 1024'ten artırıldı
     response_format: { type: 'json_object' },
     messages: [
+      {
+        // System prompt: modeli saf JSON moduna al
+        role: 'system',
+        content: 'You are a typography expert. You MUST respond with ONLY a valid JSON object. No markdown, no explanation, no text outside the JSON.',
+      },
       {
         role: 'user',
         content: [
@@ -64,13 +69,27 @@ async function analyzeWithGroq(base64Image, mimeType) {
 
 /**
  * Safely parse the model's text as JSON.
+ * Handles: markdown fences, BOM characters, surrounding text.
  */
 function parseJsonResponse(text) {
-  const cleaned = text.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+  let cleaned = text.replace(/^\uFEFF/, '').trim();
+
+  cleaned = cleaned
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```\s*$/, '')
+    .trim();
+
+  const firstBrace = cleaned.indexOf('{');
+  const lastBrace  = cleaned.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+  }
+
   try {
     return JSON.parse(cleaned);
-  } catch {
-    throw new Error(`Model geçerli JSON döndürmedi: ${cleaned.slice(0, 200)}`);
+  } catch (e) {
+    throw new Error(`Model geçerli JSON döndürmedi: ${cleaned.slice(0, 300)}`);
   }
 }
 
