@@ -1,7 +1,9 @@
 const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 const { FONT_ANALYSIS_PROMPT } = require('../prompt');
 
-const GEMINI_MODEL = 'gemini-2.5-flash-preview-05-20';
+// ── Güncel model adı: "gemini-2.5-flash" (preview-05-20 artık geçersiz) ───
+const GEMINI_MODEL = 'gemini-2.5-flash';
+// v1beta yerine v1beta kullanmaya devam ediyoruz ama model adı düzeltildi
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
 /**
@@ -32,7 +34,7 @@ async function analyzeWithGemini(base64Image, mimeType) {
       },
     ],
     generationConfig: {
-      // Force JSON-only output — Gemini 2.5 supports this natively
+      // Force JSON-only output
       responseMimeType: 'application/json',
       temperature: 0.1,
       maxOutputTokens: 1024,
@@ -52,7 +54,7 @@ async function analyzeWithGemini(base64Image, mimeType) {
 
   const data = await response.json();
 
-  // Extract text from the first candidate part
+  // Gemini 2.5 Flash JSON mode — yanıt direkt JSON metin olarak gelir
   const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!rawText) throw new Error('Gemini boş yanıt döndürdü.');
 
@@ -61,10 +63,8 @@ async function analyzeWithGemini(base64Image, mimeType) {
 
 /**
  * Safely parse the model's text as JSON.
- * Strips any accidental markdown fences just in case.
  */
 function parseJsonResponse(text) {
-  // Strip possible ```json ... ``` wrapper (model should never add this, but just in case)
   const cleaned = text.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
   try {
     return JSON.parse(cleaned);
