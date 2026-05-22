@@ -1,42 +1,56 @@
 /**
  * The exact JSON-only prompt sent to both Gemini and Groq.
- * Both providers are instructed to return ONLY a JSON object.
  *
- * Prompt, font tespitinde daha kesin ve gerçekçi sonuç almak için
- * aşırı yüksek benzerlik oranlarını engeller ve Arial/Helvetica gibi
- * temel sistem fontlarını öncelikle dikkate almasını ister.
+ * DEĞİŞİKLİKLER (v2):
+ * - "Önce Arial değerlendir" kuralı KALDIRILDI → Arial/Helvetica bias düzeltildi
+ * - Modele net talimat: hangi özelliklere bakacağı, nasıl ayırt edeceği
+ * - Serif/Sans-Serif ayrımını önce yap, sonra font adını ver
+ * - Yanılma toleransı açıkça belirtildi
  */
-const FONT_ANALYSIS_PROMPT = `Sen profesyonel bir tipografi uzmanısın. Görseldeki metnin yazı tipini (fontunu) analiz et.
+const FONT_ANALYSIS_PROMPT = `Sen deneyimli bir tipografi uzmanısın. Sana verilen görseldeki metnin yazı tipini (fontunu) titizlikle analiz et.
 
-ÖNEMLİ KURALLAR:
-- Önce Arial, Helvetica, Times New Roman, Georgia, Verdana, Tahoma gibi yaygın sistem fontlarını değerlendir.
-- Karakterlerin tırnak yapısını (serif/sans-serif), köşe yuvarlıklığını, harfler arası boşluğu ve x-yüksekliğini dikkate al.
-- Benzerlik oranlarını gerçekçi tut; birinci tahmin nadiren %95'in üzerinde olmalı.
-- Eğer görsel sistem fontuna benziyorsa, önce onu yaz.
+ANALİZ ADIMLARI (SIRASINA GÖRE UY):
+1. Önce kategoriyi belirle: Serif mi, Sans-Serif mi, Script/El Yazısı mı, Display mı, Monospace mi?
+   - Serif: Harf uçlarında ince çıkıntılar (tırnaklar) var mı? → Times New Roman, Georgia, Garamond, Palatino
+   - Sans-Serif: Düz, tırnaksız harfler → Helvetica, Arial, Roboto, Open Sans, Futura
+   - NOT: Serif fontları Arial/Helvetica ile KARIŞTIRMA. Tırnaklar varsa kesinlikle Serif kategorisidir.
+
+2. Harflerin detaylarını incele:
+   - "a" harfi: Tek katlı mı (Futura, Gill Sans) yoksa çift katlı mı (Times New Roman, Georgia, Arial)?
+   - "g" harfi: Tek katlı mı (Gill Sans) yoksa çift katlı mı (Times New Roman, Arial)?
+   - "R" harfi: Bacağı düz mı eğri mi?
+   - "Q" harfi: Kuyruğu nerede başlıyor?
+   - x-yüksekliği: Büyük/küçük harf oranı nedir?
+   - Letter-spacing: Harfler arası boşluk dar mı, geniş mi?
+
+3. En yakın 3 fontu tahmin et — dikkatli ol, sık yapılan hatalar:
+   - Times New Roman ≠ Arial (birincisi Serif, ikincisi Sans-Serif)
+   - Helvetica ≠ Arial (çok benzer ama Helvetica daha geometrik)
+   - Benzerlik oranı gerçekçi ol, nadiren %95 üzeri yaz.
 
 Cevabını SADECE ve SADECE aşağıdaki JSON formatında döndür. Başında veya sonunda hiçbir metin, selamlama veya markdown işareti (örn. \`\`\`json) ekleme. Doğrudan { ile başla.
 
 {
-  "font_tarzi": "Yazı tipi kategorisi (Örn: Serif, Sans-Serif, Script, Display, Monospace)",
-  "tespit_edilen_metin": "Görselde fontu analiz edilen örnek kelime veya cümle",
+  "font_tarzi": "Yazı tipi kategorisi (Serif, Sans-Serif, Script, Display veya Monospace)",
+  "tespit_edilen_metin": "Görselde analiz ettiğin örnek kelime veya cümle",
   "tahminler": [
     {
-      "font_adi": "En yakın tahmini 1. fontun adı",
-      "benzerlik_orani": "Tahmini doğruluk yüzdesi (Örn: 88%)",
-      "google_fonts_alternatifi": "Font ücretliyse Google Fonts'taki en yakın ücretsiz muadili. Font zaten ücretsizse kendisi.",
-      "analiz_notu": "Bu fontu seçme nedenin (kıvrım, tırnak veya karakter yapısına dair çok kısa Türkçe açıklama)."
+      "font_adi": "1. tahmin font adı",
+      "benzerlik_orani": "Yüzde tahmini (Örn: 87%)",
+      "google_fonts_alternatifi": "Font ücretliyse Google Fonts'taki ücretsiz alternatifi, ücretsizse kendisi",
+      "analiz_notu": "Bu fontu seçme nedenin: tırnak yapısı, harf biçimi gibi somut özellikler (Türkçe, kısa)"
     },
     {
-      "font_adi": "En yakın tahmini 2. fontun adı",
-      "benzerlik_orani": "Tahmini doğruluk yüzdesi (Örn: 70%)",
-      "google_fonts_alternatifi": "En yakın ücretsiz Google Fonts alternatif adı",
-      "analiz_notu": "Karakter yapısına dair ikinci tahmini destekleyen kısa Türkçe açıklama."
+      "font_adi": "2. tahmin font adı",
+      "benzerlik_orani": "Yüzde tahmini (Örn: 68%)",
+      "google_fonts_alternatifi": "En yakın ücretsiz Google Fonts alternatifi",
+      "analiz_notu": "İkinci tahmini destekleyen kısa Türkçe açıklama"
     },
     {
-      "font_adi": "En yakın tahmini 3. fontun adı",
-      "benzerlik_orani": "Tahmini doğruluk yüzdesi (Örn: 55%)",
-      "google_fonts_alternatifi": "En yakın ücretsiz Google Fonts alternatif adı",
-      "analiz_notu": "Üçüncü alternatif font için kısa Türkçe açıklama."
+      "font_adi": "3. tahmin font adı",
+      "benzerlik_orani": "Yüzde tahmini (Örn: 51%)",
+      "google_fonts_alternatifi": "En yakın ücretsiz Google Fonts alternatifi",
+      "analiz_notu": "Üçüncü alternatif için kısa Türkçe açıklama"
     }
   ]
 }`;
