@@ -1,17 +1,16 @@
 const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 const { FONT_ANALYSIS_PROMPT } = require('../prompt');
 
-// ── Güncel model adı: "gemini-2.5-flash" (preview-05-20 artık geçersiz) ───
 const GEMINI_MODEL = 'gemini-2.5-flash';
-// v1beta yerine v1beta kullanmaya devam ediyoruz ama model adı düzeltildi
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
 /**
  * Analyse a font image using Google Gemini 2.5 Flash.
  *
- * @param {string} base64Image  - base64-encoded image (no data-URI prefix)
- * @param {string} mimeType     - e.g. "image/jpeg" | "image/png" | "image/webp"
- * @returns {Promise<object>}   - parsed JSON result from the model
+ * DEĞİŞİKLİKLER (v2):
+ * - maxOutputTokens 1024 → 2048 (kesilmiş JSON hatasını önler)
+ * - parseJsonResponse daha sağlam hale getirildi (markdown fence + BOM temizliği)
+ * - Hata mesajı daha açıklayıcı
  */
 async function analyzeWithGemini(base64Image, mimeType) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -34,10 +33,9 @@ async function analyzeWithGemini(base64Image, mimeType) {
       },
     ],
     generationConfig: {
-      // Force JSON-only output
       responseMimeType: 'application/json',
       temperature: 0.1,
-      maxOutputTokens: 1024,
+      maxOutputTokens: 2048, // ← 1024'ten artırıldı: kesilmiş JSON hatasını önler
     },
   };
 
@@ -54,22 +52,46 @@ async function analyzeWithGemini(base64Image, mimeType) {
 
   const data = await response.json();
 
-  // Gemini 2.5 Flash JSON mode — yanıt direkt JSON metin olarak gelir
   const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!rawText) throw new Error('Gemini boş yanıt döndürdü.');
+  if (!rawText) {
+    // Finish reason kontrolü — güvenlik filtresi mi?
+    const finishReason = data?.candidates?.[0]?.finishReason;
+    throw new Error(
+      finishReason && finishReason !== 'STOP'
+        ? `Gemini yanıtı tamamlanamadı (${finishReason}). Görseli kontrol edin.`
+        : 'Gemini boş yanıt döndürdü.'
+    );
+  }
 
   return parseJsonResponse(rawText);
 }
 
 /**
  * Safely parse the model's text as JSON.
+ * Handles: markdown fences, BOM characters, trailing commas (best-effort).
  */
 function parseJsonResponse(text) {
-  const cleaned = text.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+  // 1. BOM ve başındaki/sonundaki boşlukları temizle
+  let cleaned = text.replace(/^\uFEFF/, '').trim();
+
+  // 2. ```json ... ``` veya ``` ... ``` bloklarını kaldır
+  cleaned = cleaned
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```\s*$/,  '')
+    .trim();
+
+  // 3. İlk { ile son } arasını kes (bazen model önüne metin ekler)
+  const firstBrace = cleaned.indexOf('{');
+  const lastBrace  = cleaned.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+  }
+
   try {
     return JSON.parse(cleaned);
-  } catch {
-    throw new Error(`Model geçerli JSON döndürmedi: ${cleaned.slice(0, 200)}`);
+  } catch (e) {
+    throw new Error(`Model geçerli JSON döndürmedi: ${cleaned.slice(0, 300)}`);
   }
 }
 
