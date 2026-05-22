@@ -1,16 +1,19 @@
 const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 const { FONT_ANALYSIS_PROMPT } = require('../prompt');
 
-const GEMINI_MODEL = 'gemini-2.5-flash';
+const GEMINI_MODEL   = 'gemini-2.5-flash';
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
 /**
  * Analyse a font image using Google Gemini 2.5 Flash.
  *
- * DEĞİŞİKLİKLER (v2):
- * - maxOutputTokens 1024 → 2048 (kesilmiş JSON hatasını önler)
- * - parseJsonResponse daha sağlam hale getirildi (markdown fence + BOM temizliği)
- * - Hata mesajı daha açıklayıcı
+ * DEĞİŞİKLİKLER (v3):
+ * - gemini-2.5-flash "thinking" modu: parts[0] = düşünce metni (thought: true),
+ *   parts[1] = asıl JSON yanıt. Kod artık tüm parts'ı tarayarak JSON içeren
+ *   parçayı buluyor → "Model geçerli JSON döndürmedi" hatası düzeltildi.
+ * - thinkingConfig: { thinkingBudget: 0 } ile thinking devre dışı (isteğe bağlı hız artışı).
+ * - maxOutputTokens 2048 → 4096 (thinking token'ları sayılmıyor, güvenli taraf).
+ * - parseJsonResponse aynı sağlam yapı korundu.
  */
 async function analyzeWithGemini(base64Image, mimeType) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -35,7 +38,11 @@ async function analyzeWithGemini(base64Image, mimeType) {
     generationConfig: {
       responseMimeType: 'application/json',
       temperature: 0.1,
-      maxOutputTokens: 2048, // ← 1024'ten artırıldı: kesilmiş JSON hatasını önler
+      maxOutputTokens: 4096,
+      // Thinking bütçesini 0 yap: daha hızlı + parts[0] = doğrudan JSON
+      thinkingConfig: {
+        thinkingBudget: 0,
+      },
     },
   };
 
@@ -52,9 +59,19 @@ async function analyzeWithGemini(base64Image, mimeType) {
 
   const data = await response.json();
 
-  const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  // ── Tüm parts'ı tara: thinking part'lar thought:true ile işaretleniyor,
+  //    asıl JSON yanıt thought:true OLMAYAN part'ta geliyor.
+  const parts = data?.candidates?.[0]?.content?.parts ?? [];
+
+  // Önce thought olmayan (asıl yanıt) part'ı dene
+  let rawText = parts.find(p => !p.thought && p.text)?.text;
+
+  // Bulamazsan herhangi bir text içeren part'ı al (eski API davranışı)
   if (!rawText) {
-    // Finish reason kontrolü — güvenlik filtresi mi?
+    rawText = parts.find(p => p.text)?.text;
+  }
+
+  if (!rawText) {
     const finishReason = data?.candidates?.[0]?.finishReason;
     throw new Error(
       finishReason && finishReason !== 'STOP'
@@ -68,7 +85,7 @@ async function analyzeWithGemini(base64Image, mimeType) {
 
 /**
  * Safely parse the model's text as JSON.
- * Handles: markdown fences, BOM characters, trailing commas (best-effort).
+ * Handles: markdown fences, BOM characters, surrounding text.
  */
 function parseJsonResponse(text) {
   // 1. BOM ve başındaki/sonundaki boşlukları temizle
@@ -78,7 +95,7 @@ function parseJsonResponse(text) {
   cleaned = cleaned
     .replace(/^```json\s*/i, '')
     .replace(/^```\s*/i, '')
-    .replace(/```\s*$/,  '')
+    .replace(/```\s*$/, '')
     .trim();
 
   // 3. İlk { ile son } arasını kes (bazen model önüne metin ekler)
