@@ -21,6 +21,7 @@ app.use(cors({
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: parseInt(process.env.RATE_LIMIT_MAX || '60'),
+  validate: false,   // ← bu satırı ekle
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Cok fazla istek. 15 dakika sonra tekrar deneyin.' },
