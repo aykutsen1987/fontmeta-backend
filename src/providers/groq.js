@@ -9,11 +9,10 @@ const GROQ_MODELS = [
 ];
 
 /**
- * Analyse a font image using Groq Llama vision model.
- *
- * v4 DEĞİŞİKLİKLER:
- * - System prompt'a serif-öncelikli talimat eklendi.
- * - "ALWAYS check for serifs FIRST" → Groq'un sans-serif'e atlama alışkanlığı kırılıyor.
+ * v5 DEĞİŞİKLİKLER:
+ * - Script/Gabriola farkındalığı system prompt'a eklendi.
+ * - Serif-first kuralı korundu.
+ * - "Never default to sans-serif" kuralı eklendi.
  */
 async function analyzeWithGroq(base64Image, mimeType) {
   const apiKey = process.env.GROQ_API_KEY;
@@ -33,29 +32,23 @@ async function analyzeWithGroq(base64Image, mimeType) {
         {
           role: 'system',
           content:
-            'You are an expert typographer and font identification specialist. ' +
-            'You MUST respond with ONLY a valid JSON object — no markdown, no explanation, ' +
-            'no text outside the JSON. ' +
-            'CRITICAL RULE: ALWAYS check for serifs FIRST. ' +
-            'Look at the bottom of capital letters H, T, I — do you see small horizontal "feet"? ' +
-            'If YES → this is a SERIF font. Common serif fonts: Times New Roman, Georgia, Garamond, Palatino, Cambria. ' +
-            'Times New Roman specifically has: HIGH stroke contrast (thick/thin difference), SHORT x-height, ' +
-            'SHARP triangular wedge serifs, and TIGHT letter spacing. ' +
-            'If you see serifs, do NOT return Arial, Calibri, Segoe UI, or any sans-serif font. ' +
-            'If NO serifs → sans-serif: Arial, Helvetica, Calibri, Segoe UI, Roboto, Open Sans, etc. ' +
-            'Always examine letter serifs carefully before making any decision.',
+            'You are an expert typographer. Respond ONLY with valid JSON — no markdown, no text outside JSON. ' +
+            'IDENTIFICATION ORDER — follow this EVERY TIME: ' +
+            '(1) SCRIPT CHECK FIRST: Is the text flowing, calligraphic, cursive, or decorative? ' +
+            'If yes → Script fonts: Gabriola (ornate swashes), Great Vibes, Dancing Script, Pacifico, Edwardian Script. ' +
+            'Gabriola has extremely ornate capital letters with floral flourishes and hairline strokes. ' +
+            '(2) SERIF CHECK: Look at base of capital H or T — do you see horizontal feet (serifs)? ' +
+            'If yes → Times New Roman (sharp wedge serifs, tight spacing, high contrast), ' +
+            'Georgia (rounded serifs, tall x-height), Garamond (low contrast, narrow), Palatino. ' +
+            '(3) SANS-SERIF LAST: Only if no script and no serifs → Arial, Calibri, Segoe UI, Verdana. ' +
+            'NEVER default to sans-serif. If you see curves or serifs, use the correct category. ' +
+            'This is a camera photo — slight blur is normal, look at overall letterform structure.',
         },
         {
           role: 'user',
           content: [
-            {
-              type: 'image_url',
-              image_url: { url: dataUri },
-            },
-            {
-              type: 'text',
-              text: FONT_ANALYSIS_PROMPT,
-            },
+            { type: 'image_url', image_url: { url: dataUri } },
+            { type: 'text', text: FONT_ANALYSIS_PROMPT },
           ],
         },
       ],
@@ -73,9 +66,7 @@ async function analyzeWithGroq(base64Image, mimeType) {
     if (!response.ok) {
       const errText = await response.text();
       lastError = new Error(`Groq API hatası ${response.status} (${model}): ${errText}`);
-      if (response.status === 429 || response.status === 503 || response.status === 404) {
-        continue;
-      }
+      if (response.status === 429 || response.status === 503 || response.status === 404) continue;
       throw lastError;
     }
 
@@ -94,19 +85,12 @@ async function analyzeWithGroq(base64Image, mimeType) {
 
 function parseJsonResponse(text) {
   let cleaned = text.replace(/^\uFEFF/, '').trim();
-
-  cleaned = cleaned
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/```\s*$/, '')
-    .trim();
-
+  cleaned = cleaned.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/, '').trim();
   const firstBrace = cleaned.indexOf('{');
   const lastBrace  = cleaned.lastIndexOf('}');
   if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
     cleaned = cleaned.slice(firstBrace, lastBrace + 1);
   }
-
   try {
     return JSON.parse(cleaned);
   } catch (e) {
