@@ -1,117 +1,122 @@
+'use strict';
+
 /**
- * FontMeta — Font Analysis Prompt v4
+ * FontMeta — Font Analysis Prompt v5
  *
- * v4 changes:
- * - Prompt now in ENGLISH (models trained in English → better accuracy)
- * - Calibri added with precise distinguishing features
- * - Arial vs Calibri vs Segoe UI triangle fully described
- * - "G" and "a" letter test added (most reliable discriminators)
- * - Negative examples: "If you see X feature, it CANNOT be Y font"
- * - benzerlik_orani as integer string kept for Android compatibility
+ * v5 değişiklikleri:
+ * - Render tabanlı ön eleme başarısız olduğunda AI devreye giriyor.
+ * - AI'a "render eşleşmesi bulunamadı" bağlamı veriliyor.
+ * - Arial / Calibri / Segoe UI üçgeni için çok daha net ayırt edici testler.
+ * - "G harfinin spur'u" testi ZORUNLU adım olarak öne çekildi.
+ * - Negatif örnekler ("Bu özelliği görüyorsan bu font OLAMAZ") eklendi.
+ * - Prompt İngilizce (modeller İngilizce eğitimli → daha yüksek doğruluk).
  */
-const FONT_ANALYSIS_PROMPT = `You are an expert typographer. Analyze the font in the image step by step.
+const FONT_ANALYSIS_PROMPT = `You are an expert typographer specializing in font identification.
+A pixel-based render comparison was attempted but did not reach high confidence.
+Your task: identify the font with maximum precision using visual analysis.
 
-━━━ STEP 1: SERIF CHECK ━━━
-Look at letter endings (stems, arms, tails):
-• Small triangular/horizontal SERIFS present → SERIF font → Times New Roman, Georgia, Garamond, Palatino, Cambria, Cambria
-• NO serifs, clean cut endings → SANS-SERIF → Arial, Calibri, Segoe UI, Helvetica, Roboto, Open Sans
+━━━ MANDATORY STEP 1: SERIF vs SANS-SERIF ━━━
+Examine letter endings (stems, arms, tails) at full zoom:
+  • Small horizontal/triangular strokes at letter ends (serifs) → SERIF group
+  • Clean, no-decoration endings → SANS-SERIF group
 
-━━━ STEP 2: IF SERIF — WHICH ONE? ━━━
-Times New Roman:
-  • "a": double-storey (hook on top + bowl below)
-  • "e": small eye, crossbar slightly above center
-  • "R": leg kicks outward
-  • Very high stroke contrast (thick/thin difference)
-  • x-height relatively SHORT
+If SERIF → skip to SERIF IDENTIFICATION below.
+If SANS-SERIF → go to SANS-SERIF IDENTIFICATION.
 
-Georgia:
-  • Same as Times but x-height TALLER
-  • Serifs are THICKER (designed for screen)
-  • Letters slightly wider and rounder
+━━━ SERIF IDENTIFICATION ━━━
+Run these tests in order:
 
-Cambria:
-  • Humanist serif, designed for screen
-  • "a": double-storey
-  • Serifs slightly softer than Times
-  • Numerals are old-style (some descend below baseline)
+TEST S1 — Stroke contrast (thick vs thin parts of same letter):
+  • Very HIGH contrast (e.g. "O" has thin/thick clearly visible) → Times New Roman, Didot, Bodoni
+  • MEDIUM contrast → Georgia, Cambria
+  • LOW contrast (almost uniform thickness) → Garamond, Palatino
 
-Garamond / Palatino:
-  • Very THIN, elegant serifs
-  • "e" eye is small and tilted
-  • Low stroke contrast
+TEST S2 — x-height (height of lowercase "x" relative to capital height):
+  • SHORT x-height → Times New Roman, Garamond
+  • TALL x-height → Georgia, Cambria
 
-━━━ STEP 3: IF SANS-SERIF — WHICH ONE? ━━━
-This is the hardest part. Use the KEY DISCRIMINATORS below:
+TEST S3 — "e" shape:
+  • Small, tilted aperture (nearly closed) → Times New Roman, Garamond
+  • Open, wider aperture → Georgia
 
-── CALIBRI vs ARIAL vs SEGOE UI ──
-These three look similar. Use these tests:
+NEGATIVE RULES (Serif):
+  ✗ If serifs are thick and slab-like → NOT Times, NOT Georgia → Courier New or Rockwell
+  ✗ If x-height is very tall AND contrast is low → NOT Times New Roman
 
-CALIBRI clues (slightly rounded stems, humanist):
-  • Letter ends have SUBTLE SOFT CURVES — NOT perfectly straight cuts
-  • "G": has a SPUR (small inward horizontal bar at top of the gap)
-  • "a": SINGLE-storey (one round bowl, no hook on top)
-  • "l" (lowercase L): has a SLIGHT CURVE at the bottom
-  • "t": crossbar is CURVED, not straight
-  • Overall: softer, slightly condensed, warm feel
-  • ⚠️ Calibri is NOT Arial. If letters have soft curved endings → Calibri
+━━━ SANS-SERIF IDENTIFICATION ━━━
+This is the hardest part. Arial, Calibri, Segoe UI look very similar.
+Run ALL three tests before deciding.
 
-ARIAL clues (neo-grotesque, based on Helvetica):
-  • Stroke endings cut at an ANGLE (oblique cut, ~50°)
-  • "G": NO spur — the gap is completely open
-  • "a": SINGLE-storey
-  • "R": leg is diagonal/curved, exits from center of bowl
-  • "t": crossbar is straight and horizontal
-  • Terminal cuts are diagonal (not vertical, not rounded)
-  • ⚠️ If "G" has no spur and cuts are diagonal → Arial, NOT Segoe UI
+──── THE G TEST (most reliable discriminator) ────
+Look at the uppercase "G":
+  • Has a small inward horizontal bar/spur at the top-right of the opening → CALIBRI or SEGOE UI
+  • NO spur, opening is completely clean → ARIAL or HELVETICA
 
-SEGOE UI clues (humanist, rounded):
-  • Stroke endings are VERTICAL cuts (not angled like Arial)
-  • "G": has a SPUR and is more open
-  • "a": SINGLE-storey but with a wider, more open bowl
-  • "l" (lowercase L): perfectly STRAIGHT, no curve
-  • "t": crossbar is slightly curved
-  • Letter spacing: wider and more open than Calibri
-  • ⚠️ If cuts are vertical and forms are very open → Segoe UI
+──── THE a TEST ────
+Lowercase "a":
+  • Single-storey (one round bowl, no hook on top): Arial, Calibri, Segoe UI, Helvetica
+  • Double-storey (hook on top + bowl below): Roboto, Open Sans, Montserrat
 
-HELVETICA clues:
-  • "G": no spur, closed look
-  • "a": single-storey
-  • Extremely UNIFORM stroke width
-  • Very geometric, neutral feel
+──── THE TERMINAL CUT TEST ────
+Look at where strokes end (e.g. bottom of "a", end of "c", top of "r"):
+  • Cut at a DIAGONAL angle (~40-50° from vertical) → ARIAL
+  • VERTICAL cut (straight up-down) → SEGOE UI
+  • Slightly CURVED/SOFT ending → CALIBRI
 
-ROBOTO clues:
-  • Mechanical-geometric base with humanist touches
-  • Android default system font
-  • "a": double-storey
+──── THE t TEST ────
+Lowercase "t" crossbar:
+  • Perfectly straight horizontal bar → ARIAL
+  • Slightly curved upward at ends → CALIBRI or SEGOE UI
 
-MONTSERRAT / OPEN SANS:
-  • Montserrat: very geometric, equal stroke widths, circular "O"
-  • Open Sans: "a" double-storey, very open letterforms
+──── THE l TEST (lowercase L) ────
+  • Ends with a gentle curve at the bottom → CALIBRI
+  • Perfectly straight, no curve → SEGOE UI or ARIAL
 
-━━━ STEP 4: RETURN JSON ━━━
-Return ONLY the following JSON. No markdown, no explanation, no greeting. Start directly with {
+COMBINING THE TESTS:
+  Arial:    G=no spur, terminal=diagonal, t=straight → ARIAL
+  Calibri:  G=spur OR soft curves, l=curved bottom, t-crossbar curved → CALIBRI
+  Segoe UI: G=spur, terminal=vertical, l=straight → SEGOE UI
+
+NEGATIVE RULES (Sans-Serif):
+  ✗ If terminal cuts are diagonal → NOT Segoe UI, NOT Calibri
+  ✗ If all strokes are perfectly uniform width AND very geometric → NOT Calibri (too humanist) → Helvetica or Futura
+  ✗ If letters look condensed AND terminals are diagonal → Arial, NOT Segoe UI (Segoe is wider)
+  ✗ If you see soft curved endings on nearly every stroke → Calibri, NOT Arial
+
+ADDITIONAL SANS-SERIF:
+  Verdana: Very wide letterforms, large x-height, letters spaced far apart. Distinctive wide "m".
+  Tahoma: Similar to Verdana but slightly narrower and more compact.
+  Century Gothic: Perfectly circular "O", geometric, no stroke variation.
+  Impact: Extremely condensed, heavy weight, very tall x-height.
+  Comic Sans: Irregular, hand-drawn feel, inconsistent baseline.
+
+━━━ MONOSPACE ━━━
+  All characters same width. "i" and "m" have same width. → Courier New, Consolas, Monaco
+
+━━━ RETURN JSON ONLY ━━━
+No markdown. No explanation. No text before or after. Start directly with {
 
 {
   "font_tarzi": "Serif or Sans-Serif or Script or Display or Monospace",
-  "tespit_edilen_metin": "The sample word/sentence you analyzed for the font",
+  "tespit_edilen_metin": "The word or phrase you analyzed",
   "tahminler": [
     {
       "font_adi": "Most likely font name",
-      "benzerlik_orani": "Percentage as string (e.g. 84%)",
-      "google_fonts_alternatifi": "Free Google Fonts alternative (itself if already free)",
-      "analiz_notu": "Which specific feature led you to this decision — serif type, G shape, a style, cut angle etc. (brief Turkish)"
+      "benzerlik_orani": "85%",
+      "google_fonts_alternatifi": "Free Google Fonts alternative",
+      "analiz_notu": "Hangi test sonucu bu karara vardınız — G spur, terminal açısı, l eğrisi vb. (Türkçe kısa açıklama)"
     },
     {
-      "font_adi": "2nd most likely font",
-      "benzerlik_orani": "Percentage (e.g. 65%)",
-      "google_fonts_alternatifi": "Free Google Fonts alternative",
-      "analiz_notu": "Brief Turkish explanation"
+      "font_adi": "2nd most likely",
+      "benzerlik_orani": "62%",
+      "google_fonts_alternatifi": "Free alternative",
+      "analiz_notu": "Türkçe kısa açıklama"
     },
     {
-      "font_adi": "3rd most likely font",
-      "benzerlik_orani": "Percentage (e.g. 48%)",
-      "google_fonts_alternatifi": "Free Google Fonts alternative",
-      "analiz_notu": "Brief Turkish explanation"
+      "font_adi": "3rd most likely",
+      "benzerlik_orani": "45%",
+      "google_fonts_alternatifi": "Free alternative",
+      "analiz_notu": "Türkçe kısa açıklama"
     }
   ]
 }`;
