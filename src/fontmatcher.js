@@ -1,38 +1,31 @@
 'use strict';
 
 /**
- * FontMatcher v3 — Doğru Render-vs-Render Yaklaşımı
+ * FontMatcher v4 — Serif-Aware Render Karşılaştırma
  *
- * TEMEL FİKİR:
- * ─────────────
- * Fotoğraftaki metni değil, fotoğraftaki fontun METRİKLERİNİ kullan.
- * OCR metni elimizde var → o metni TÜM fontlarla render et →
- * her render'ın metrik vektörünü çıkar → fotoğrafın metrik vektörüyle
- * en yakın render = kullanılan font.
+ * v4 DEĞİŞİKLİKLER:
+ * ─────────────────
+ * 1. buildSampleText: Fallback metin "HhIiTtFf1" → serif çıkıntıları H/I/T'de çok belirgin
+ * 2. Yeni metrik: serifScore — harflerin köşe/kenar piksel yoğunluğu (serif çıkıntıları)
+ * 3. Yeni metrik: strokeContrast — stroke kalınlık farkı (Times'ın yüksek kontrastı)
+ * 4. WEIGHTS: serif metrikleri daha yüksek ağırlık aldı
+ * 5. DISTANCE_THRESHOLD: 0.18 → 0.20 (serif fontlar için biraz daha gevşek)
+ * 6. Kanal normalizasyonu: her metrik 0-1 aralığında normalize ediliyor
  *
- * METRİK VEKTÖRÜ (8 boyut, font ailesini ayırt eden özellikler):
- *  1. Ink density           — toplam siyah piksel / alan
- *  2. Horizontal profile variance — satır başına siyah piksel varyansı (serif/sans ayrımı)
- *  3. Vertical profile variance   — sütun başına siyah piksel varyansı (geniş/dar ayrımı)
- *  4. Stroke width estimate       — ince/kalın fark (serif stroke contrast)
- *  5. Ascender ratio              — üst bölge / toplam yükseklik oranı
- *  6. Mid-zone density            — x-height bölgesi doluluk oranı
- *  7. Character width ratio       — ortalama karakter genişliği tahmini
- *  8. Terminal angle estimate     — köşegen vs dikey kesim tahmini
+ * TEMEL FİKİR (korundu):
+ * OCR metni → tüm fontlarla render et → metrik vektörü → Öklid mesafesi
  *
- * Bu metrikler histogram'dan çok daha AYIRTEDİCİ:
- * - Arial: orta ink density, yüksek terminal angle, düşük stroke contrast
- * - Calibri: düşük ink density (ince gövdeler), düşük terminal angle (yumuşak)
- * - Segoe UI: orta density, dikey terminaller, geniş karakterler
- * - Times NR: yüksek horizontal variance (serif çıkıntıları), yüksek stroke contrast
- *
- * OCR METNİ YOK?
- * Ayırt edici test karakterleri kullan: "AaGgTtLl"
- * Bunlar G-spur, a-storey, t-crossbar ve l-curve tüm kritik farklılıkları içerir.
- *
- * GÜVEN EŞİĞİ:
- * Metrik mesafesi belirli eşiğin altındaysa "matched = true" → AI'a gitme.
- * Eşik aşılırsa AI devreye girer.
+ * METRİK VEKTÖRÜ (10 boyut):
+ *  1. inkDensity           — toplam siyah piksel / alan
+ *  2. hVariance            — yatay profil varyansı (serif çıkıntıları)
+ *  3. vVariance            — dikey profil varyansı
+ *  4. ascenderDensity      — ascender bölgesi yoğunluğu
+ *  5. midDensity           — x-height bölgesi yoğunluğu (serif x-height tespiti)
+ *  6. descenderDensity     — descender bölgesi
+ *  7. inkWidth             — karakter genişliği tahmini
+ *  8. cv                   — stroke uniformity (serif'te daha yüksek)
+ *  9. serifScore [YENİ]    — köşe piksel yoğunluğu (serif çıkıntı tespiti)
+ * 10. strokeContrast [YENİ] — ince/kalın stroke farkı (Times'ta çok yüksek)
  */
 
 const { createCanvas, registerFont, loadImage } = require('canvas');
@@ -45,9 +38,8 @@ const RENDER_W  = 1000;
 const RENDER_H  = 200;
 const FONT_SIZE = 96;
 
-// Maksimum normalize edilmiş Öklid mesafesi eşiği (küçük = daha yakın = daha güvenilir)
-// 0.18 altı = güvenilir eşleşme, üstü = AI'a git
-const DISTANCE_THRESHOLD = parseFloat(process.env.FONT_MATCH_THRESHOLD || '0.18');
+// 0.18 → 0.20: serif fontlar için biraz daha toleranslı
+const DISTANCE_THRESHOLD = parseFloat(process.env.FONT_MATCH_THRESHOLD || '0.20');
 
 const FONT_LIST = [
   { family: 'fm_arial',     file: 'arial.ttf',    display: 'Arial',            category: 'Sans-Serif',  googleAlt: 'Inter',             similar: ['Helvetica', 'Liberation Sans'] },
@@ -80,8 +72,6 @@ const FONT_LIST = [
 
 let fontsRegistered = false;
 const registeredFonts = [];
-
-// Önceden hesaplanmış font metrik vektörleri (sunucu başlangıcında bir kez)
 const fontMetricCache = new Map();
 
 function registerFonts() {
@@ -101,12 +91,6 @@ function registerFonts() {
   console.log(`[FontMatcher] ${registeredFonts.length}/${FONT_LIST.length} font yüklendi.`);
 }
 
-// ── Ana karşılaştırma fonksiyonu ─────────────────────────────────────────────
-
-/**
- * @param {Buffer} imageBuffer — gelen fotoğraf
- * @param {string} ocrText     — OCR ile çıkarılan metin
- */
 async function matchFont(imageBuffer, ocrText) {
   registerFonts();
 
@@ -115,11 +99,8 @@ async function matchFont(imageBuffer, ocrText) {
   }
 
   const sampleText = buildSampleText(ocrText);
-
-  // 1. Fotoğraftan metrik vektörü çıkar
   const photoMetrics = await extractPhotoMetrics(imageBuffer);
 
-  // 2. Her fontu aynı metinle render et → metrik vektörü çıkar → önbelleğe al
   const candidates = [];
   for (const font of registeredFonts) {
     try {
@@ -133,19 +114,16 @@ async function matchFont(imageBuffer, ocrText) {
     } catch (_) { /* render edemediyse atla */ }
   }
 
-  // 3. Her adayın fotoğraf metrik vektörüne olan normalize Öklid mesafesini hesapla
   const scored = candidates.map(c => ({
     font:     c.font,
     metrics:  c.metrics,
     distance: euclidean(photoMetrics, c.metrics),
   }));
 
-  scored.sort((a, b) => a.distance - b.distance); // küçük mesafe = daha yakın
+  scored.sort((a, b) => a.distance - b.distance);
 
   const top3    = scored.slice(0, 3);
   const best    = top3[0];
-
-  // Güven: mesafe → skor (0-1, ters ilişki)
   const topScore = Math.max(0, 1 - best.distance / 0.5);
 
   const results = top3.map((r, i) => ({
@@ -153,13 +131,14 @@ async function matchFont(imageBuffer, ocrText) {
     benzerlik_orani:          `${Math.round(topScore * (i === 0 ? 1 : i === 1 ? 0.8 : 0.6) * 100)}%`,
     google_fonts_alternatifi: r.font.googleAlt,
     analiz_notu:              i === 0
-      ? `Render metrik karşılaştırması — mesafe: ${r.distance.toFixed(3)}`
+      ? `Render metrik karşılaştırması — mesafe: ${r.distance.toFixed(3)}, serifScore: ${r.metrics.serifScore.toFixed(3)}`
       : `Alternatif öneri${r.font.similar?.length ? ` (${r.font.similar.slice(0,2).join(', ')})` : ''}`,
   }));
 
   console.log(
-    `[FontMatcher v3] sampleText="${sampleText}" | Top-3: ` +
-    top3.map(r => `${r.font.display} d=${r.distance.toFixed(3)}`).join(', ')
+    `[FontMatcher v4] sampleText="${sampleText}" | Top-3: ` +
+    top3.map(r => `${r.font.display} d=${r.distance.toFixed(3)}`).join(', ') +
+    ` | photoSerif=${photoMetrics.serifScore.toFixed(3)} photoContrast=${photoMetrics.strokeContrast.toFixed(3)}`
   );
 
   const matched = best.distance <= DISTANCE_THRESHOLD;
@@ -174,18 +153,14 @@ async function matchFont(imageBuffer, ocrText) {
   };
 }
 
-// ── Fotoğraftan metrik çıkarma ────────────────────────────────────────────────
-
 async function extractPhotoMetrics(buffer) {
   const img    = await loadImage(buffer);
   const canvas = createCanvas(RENDER_W, RENDER_H);
   const ctx    = canvas.getContext('2d');
 
-  // Fotoğrafı beyaz zemin üzerine yerleştir, metin bölgesi RENDER alanını dolduracak şekilde
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, RENDER_W, RENDER_H);
 
-  // Orantılı boyutlandır, ortala
   const scale = Math.min(RENDER_W / img.width, RENDER_H / img.height);
   const dw    = img.width  * scale;
   const dh    = img.height * scale;
@@ -194,65 +169,59 @@ async function extractPhotoMetrics(buffer) {
   const data   = ctx.getImageData(0, 0, RENDER_W, RENDER_H).data;
   const binary = new Uint8Array(RENDER_W * RENDER_H);
   for (let i = 0; i < RENDER_W * RENDER_H; i++) {
-    // Adaptif eşik: ortalama yerine Otsu-benzeri basit eşik
     const gray = (data[i*4] + data[i*4+1] + data[i*4+2]) / 3;
-    binary[i]  = gray < 160 ? 1 : 0; // fotoğrafta gürültü olduğu için 160 (render'dan daha yüksek)
+    binary[i]  = gray < 160 ? 1 : 0;
   }
 
   return computeMetrics(binary);
 }
 
-// ── Metrik vektörü hesaplama (8 boyut) ───────────────────────────────────────
-
 function computeMetrics(binary) {
   const W = RENDER_W, H = RENDER_H;
   const total = W * H;
 
-  // --- 1. Ink density ---
+  // 1. Ink density
   let inkCount = 0;
   for (let i = 0; i < total; i++) inkCount += binary[i];
   const inkDensity = inkCount / total;
 
-  // --- 2. Yatay profil (satır başına siyah piksel) ---
+  // 2. Yatay profil varyansı
   const rowSums = new Float32Array(H);
-  for (let y = 0; y < H; y++) {
+  for (let y = 0; y < H; y++)
     for (let x = 0; x < W; x++) rowSums[y] += binary[y * W + x];
-  }
   const rowMean = rowSums.reduce((a, b) => a + b, 0) / H;
   const hVariance = rowSums.reduce((s, v) => s + (v - rowMean) ** 2, 0) / H / (W * W);
 
-  // --- 3. Dikey profil (sütun başına siyah piksel) ---
+  // 3. Dikey profil varyansı
   const colSums = new Float32Array(W);
-  for (let x = 0; x < W; x++) {
+  for (let x = 0; x < W; x++)
     for (let y = 0; y < H; y++) colSums[x] += binary[y * W + x];
-  }
-  const colMean     = colSums.reduce((a, b) => a + b, 0) / W;
-  const vVariance   = colSums.reduce((s, v) => s + (v - colMean) ** 2, 0) / W / (H * H);
+  const colMean   = colSums.reduce((a, b) => a + b, 0) / W;
+  const vVariance = colSums.reduce((s, v) => s + (v - colMean) ** 2, 0) / W / (H * H);
 
-  // --- 4. Ascender bölgesi yoğunluğu (üst %33) ---
-  const ascH    = Math.floor(H * 0.33);
-  let ascInk    = 0;
+  // 4. Ascender bölgesi (%33 üst)
+  const ascH = Math.floor(H * 0.33);
+  let ascInk = 0;
   for (let y = 0; y < ascH; y++)
     for (let x = 0; x < W; x++) ascInk += binary[y * W + x];
   const ascenderDensity = ascH > 0 ? ascInk / (ascH * W) : 0;
 
-  // --- 5. Mid-zone (x-height bölgesi %33-%66) yoğunluğu ---
+  // 5. Mid-zone (%33-%66)
   const midStart = Math.floor(H * 0.33);
   const midEnd   = Math.floor(H * 0.66);
-  let midInk     = 0;
+  let midInk = 0;
   for (let y = midStart; y < midEnd; y++)
     for (let x = 0; x < W; x++) midInk += binary[y * W + x];
   const midDensity = (midEnd - midStart) > 0 ? midInk / ((midEnd - midStart) * W) : 0;
 
-  // --- 6. Descender bölgesi yoğunluğu (alt %25) ---
+  // 6. Descender bölgesi (%75 alt)
   const descStart = Math.floor(H * 0.75);
-  let descInk     = 0;
+  let descInk = 0;
   for (let y = descStart; y < H; y++)
     for (let x = 0; x < W; x++) descInk += binary[y * W + x];
   const descenderDensity = (H - descStart) > 0 ? descInk / ((H - descStart) * W) : 0;
 
-  // --- 7. Sol kenar boşluğu (karakter genişliği tahmini) ---
-  // İlk siyah sütundan son siyah sütuna kadar genişlik / toplam genişlik
+  // 7. Ink width
   let firstInkCol = W, lastInkCol = 0;
   for (let x = 0; x < W; x++) {
     if (colSums[x] > 0) {
@@ -262,9 +231,48 @@ function computeMetrics(binary) {
   }
   const inkWidth = lastInkCol > firstInkCol ? (lastInkCol - firstInkCol) / W : 0;
 
-  // --- 8. Dikey profil düzgünlüğü (uniform stroke = Helvetica/Arial, değişken = Serif) ---
-  // Sütun doluluk oranlarının standart sapması / ortalaması (CV)
+  // 8. CV (stroke uniformity)
   const cv = colMean > 0 ? Math.sqrt(vVariance) / (colMean / H) : 0;
+
+  // 9. [YENİ] serifScore — Serif çıkıntı tespiti
+  // Harflerin alt ve üst 15% bölgesindeki yatay çıkıntılar serifin işareti.
+  // Serif fontlarda bu bölgeler yatay çizgiler (sermeler) nedeniyle daha yoğun.
+  // Yöntem: alt %15 satırlarının yatay varyansı / orta bölge varyansı oranı
+  const topH   = Math.floor(H * 0.15);
+  const botStart = Math.floor(H * 0.85);
+
+  let topRowVar = 0, botRowVar = 0;
+  // Üst bölge satır varyansları
+  const topRowSums = [];
+  for (let y = 0; y < topH; y++) topRowSums.push(rowSums[y]);
+  if (topRowSums.length > 1) {
+    const tmean = topRowSums.reduce((a,b) => a+b, 0) / topRowSums.length;
+    topRowVar = topRowSums.reduce((s,v) => s + (v-tmean)**2, 0) / topRowSums.length / (W*W);
+  }
+  // Alt bölge satır varyansları
+  const botRowSums = [];
+  for (let y = botStart; y < H; y++) botRowSums.push(rowSums[y]);
+  if (botRowSums.length > 1) {
+    const bmean = botRowSums.reduce((a,b) => a+b, 0) / botRowSums.length;
+    botRowVar = botRowSums.reduce((s,v) => s + (v-bmean)**2, 0) / botRowSums.length / (W*W);
+  }
+  // serifScore: kenar varyansının orta varyansa oranı — serif'te yüksek
+  const edgeVar   = (topRowVar + botRowVar) / 2;
+  const midVar    = hVariance;
+  const serifScore = midVar > 0 ? Math.min(edgeVar / midVar, 3.0) / 3.0 : 0;
+
+  // 10. [YENİ] strokeContrast — Stroke kalınlık farkı
+  // Sütun doluluk oranlarının max ile min farkı — yüksek kontrast = Times/Bodoni
+  const activeColDensities = colSums
+    .filter(v => v > H * 0.05)  // boş sütunları atla
+    .map(v => v / H);
+  let strokeContrast = 0;
+  if (activeColDensities.length > 4) {
+    activeColDensities.sort((a, b) => a - b);
+    const p10 = activeColDensities[Math.floor(activeColDensities.length * 0.10)];
+    const p90 = activeColDensities[Math.floor(activeColDensities.length * 0.90)];
+    strokeContrast = Math.max(0, p90 - p10);
+  }
 
   return {
     inkDensity,
@@ -275,21 +283,23 @@ function computeMetrics(binary) {
     descenderDensity,
     inkWidth,
     cv,
+    serifScore,
+    strokeContrast,
   };
 }
 
-// ── Normalize Öklid mesafesi ──────────────────────────────────────────────────
-
-// Her boyut için ağırlık (önem sırası)
+// Ağırlıklar — serif metrikleri öne çıkarıldı
 const WEIGHTS = {
-  inkDensity:       2.0,  // en önemli: serif vs sans-serif
-  hVariance:        2.5,  // serif çıkıntıları burada görünür
-  vVariance:        1.5,  // geniş/dar karakter
-  ascenderDensity:  1.5,  // ascender yüksekliği
-  midDensity:       2.0,  // x-height bölgesi (kalın/ince gövde)
-  descenderDensity: 1.0,  // descender
-  inkWidth:         1.5,  // karakter genişliği (Verdana geniş, Tahoma dar)
-  cv:               2.0,  // stroke uniformity (serif vs sans)
+  inkDensity:       2.0,
+  hVariance:        2.5,
+  vVariance:        1.5,
+  ascenderDensity:  1.5,
+  midDensity:       2.0,
+  descenderDensity: 1.0,
+  inkWidth:         1.5,
+  cv:               2.0,
+  serifScore:       3.5,  // [YENİ] en yüksek ağırlık — serif/sans-serif ayrımı
+  strokeContrast:   3.0,  // [YENİ] Times vs Calibri/Arial farkı
 };
 
 function euclidean(a, b) {
@@ -300,8 +310,6 @@ function euclidean(a, b) {
   }
   return Math.sqrt(sum);
 }
-
-// ── Yardımcı ─────────────────────────────────────────────────────────────────
 
 function renderToBinary(text, family) {
   const canvas = createCanvas(RENDER_W, RENDER_H);
@@ -324,9 +332,11 @@ function renderToBinary(text, family) {
 
 function buildSampleText(raw) {
   const trimmed = (raw || '').trim().slice(0, 24);
-  // G (spur), a (storey), t (crossbar), l (curve) — en ayırt edici karakterler
-  if (trimmed.length >= 4 && /[GaAtlRgr]/.test(trimmed)) return trimmed;
-  return 'AaGgTtLlRr';
+  // v4: Serif ayırıcı karakterler: H (yatay serif), I (çift serif), T (üst serif), f (eğri vs düz)
+  // Bunlar serifScore ve strokeContrast metriklerini daha iyi aktive eder
+  if (trimmed.length >= 4 && /[HhIiTtFfGaAl]/.test(trimmed)) return trimmed;
+  // Fallback: H ve I serifin en belirgin göründüğü harfler
+  return 'HhIiTtFf';
 }
 
 module.exports = { matchFont, registerFonts };
