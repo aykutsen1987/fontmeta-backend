@@ -1,7 +1,7 @@
 {
   "name": "fontmeta-backend",
-  "version": "1.0.0",
-  "description": "FontMeta AI font detection backend — Gemini 2.5 Flash & Groq Llama-3.2-Vision",
+  "version": "3.0.0",
+  "description": "FontMeta AI font detection backend — hibrit piksel + Gemini/Groq",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
@@ -11,14 +11,15 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "express": "^4.18.2",
+    "canvas": "^2.11.2",
     "cors": "^2.8.5",
-    "helmet": "^7.1.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.2",
     "express-rate-limit": "^7.2.0",
+    "helmet": "^7.1.0",
     "multer": "^1.4.5-lts.1",
-    "sharp": "^0.33.3",
     "node-fetch": "^3.3.2",
-    "dotenv": "^16.4.5"
+    "sharp": "^0.33.3"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"

@@ -1,18 +1,19 @@
 services:
   - type: web
     name: fontmeta-backend
-    runtime: node
-    plan: free          # upgrade to starter for always-on
+    env: node
     buildCommand: npm install
-    startCommand: npm start
+    startCommand: node src/index.js
     envVars:
       - key: NODE_ENV
         value: production
+      - key: FONT_DIR
+        value: /opt/render/project/src/fonts
+      - key: FONT_MATCH_THRESHOLD
+        value: "0.80"
       - key: GEMINI_API_KEY
-        sync: false       # set this in Render dashboard → Environment
+        sync: false
       - key: GROQ_API_KEY
-        sync: false       # set this in Render dashboard → Environment
+        sync: false
       - key: RATE_LIMIT_MAX
-        value: "30"
-    healthCheckPath: /health
-    autoDeploy: true
+        value: "60"

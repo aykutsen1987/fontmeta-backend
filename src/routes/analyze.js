@@ -1,99 +1,118 @@
+'use strict';
+
 const express = require('express');
 const sharp   = require('sharp');
-const { upload }           = require('../middleware/upload');
+const { upload }            = require('../middleware/upload');
 const { analyzeWithGemini } = require('../providers/gemini');
 const { analyzeWithGroq }   = require('../providers/groq');
+const { matchFont }         = require('../fontmatcher');
 
 const router = express.Router();
 
-// ─────────────────────────────────────────────────────────────────────────────
-// POST /api/analyze
-//
-// Accepts TWO formats from the Android client:
-//
-//  1. multipart/form-data
-//     - Field "image"    : the image file
-//     - Field "provider" : "gemini" | "groq"  (default: "gemini")
-//
-//  2. application/json
-//     - { "image": "<base64 string>", "mimeType": "image/jpeg", "provider": "gemini" }
-//
-// DEĞİŞİKLİKLER (v2):
-// - Android zaten 1024px resize yapıyor → backend resize KALDIRILDI (double-resize yok)
-//   Sadece JPEG'e çevirme yapılır, boyut küçültülmez.
-// - Hata mesajları daha açık
-// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * POST /api/analyze
+ *
+ * Akis (v3 — hibrit yerel + AI):
+ * 1. Gorsel al (multipart veya base64 JSON)
+ * 2. FontMatcher ile piksel karsilastirma yap (backend/fonts/ klasoru)
+ * 3. Yuksek guven (>= 0.80) → AI'a gitme, direkt don
+ * 4. Dusuk guven → Gemini veya Groq'a gonder
+ * 5. AI basarisiz → FontMatcher sonucunu kullan (varsa)
+ *
+ * Body: { image: "<base64>", mimeType: "image/jpeg", provider: "gemini"|"groq", ocrText: "..." }
+ * ocrText: Android'den OCR sonucu (opsiyonel, varsa karsilastirma daha dogru)
+ */
 router.post('/analyze', upload.single('image'), async (req, res) => {
   try {
-    let imageBuffer;
-    let mimeType;
-    let provider;
+    let imageBuffer, mimeType, provider, ocrText;
 
-    // ── Determine input format ───────────────────────────────────────────────
+    // ── Girdi formatini belirle ──────────────────────────────────────────────
     if (req.file) {
       imageBuffer = req.file.buffer;
       mimeType    = req.file.mimetype;
-      provider    = (req.body?.provider || 'gemini').toLowerCase().trim();
+      provider    = (req.body?.provider  || 'gemini').toLowerCase().trim();
+      ocrText     = req.body?.ocrText    || '';
     } else if (req.body?.image) {
-      const base64Raw = req.body.image;
-      const stripped  = base64Raw.replace(/^data:[^;]+;base64,/, '');
-      imageBuffer     = Buffer.from(stripped, 'base64');
-      mimeType        = req.body.mimeType || 'image/jpeg';
-      provider        = (req.body.provider || 'gemini').toLowerCase().trim();
+      const stripped = req.body.image.replace(/^data:[^;]+;base64,/, '');
+      imageBuffer    = Buffer.from(stripped, 'base64');
+      mimeType       = req.body.mimeType  || 'image/jpeg';
+      provider       = (req.body.provider || 'gemini').toLowerCase().trim();
+      ocrText        = req.body.ocrText   || '';
     } else {
-      return res.status(400).json({ error: 'Görsel bulunamadı. "image" alanı zorunludur.' });
+      return res.status(400).json({ error: 'Gorsel bulunamadi. "image" alani zorunludur.' });
     }
 
-    // ── Validate provider ────────────────────────────────────────────────────
     if (!['gemini', 'groq'].includes(provider)) {
-      return res.status(400).json({ error: `Geçersiz provider: "${provider}". "gemini" veya "groq" kullanın.` });
+      return res.status(400).json({ error: `Gecersiz provider: "${provider}".` });
     }
 
-    // ── Sadece JPEG'e çevir, yeniden boyutlandırma YOK ──────────────────────
-    // Android istemci zaten 1024px'e düşürüp JPEG yapıyor.
-    // Burada tekrar resize yapmak: (a) kalite kaybı, (b) gereksiz CPU.
-    // Yalnızca JPEG olmayan formatları (PNG, WebP) JPEG'e çeviriyoruz.
-    let base64Image;
+    // ── JPEG'e cevir (sadece gerekirse) ─────────────────────────────────────
+    let jpegBuffer;
     if (mimeType === 'image/jpeg') {
-      // Zaten JPEG — direkt base64'e çevir
-      base64Image = imageBuffer.toString('base64');
+      jpegBuffer = imageBuffer;
     } else {
-      // PNG/WebP → JPEG dönüşümü (boyut değiştirme yok)
-      const converted = await sharp(imageBuffer)
-        .jpeg({ quality: 90 })
-        .toBuffer();
-      base64Image = converted.toString('base64');
-    }
-    const finalMime = 'image/jpeg';
-
-    // ── Call the selected provider ───────────────────────────────────────────
-    let result;
-    if (provider === 'gemini') {
-      result = await analyzeWithGemini(base64Image, finalMime);
-    } else {
-      result = await analyzeWithGroq(base64Image, finalMime);
+      jpegBuffer = await sharp(imageBuffer).jpeg({ quality: 90 }).toBuffer();
     }
 
-    // ── Validate response shape ──────────────────────────────────────────────
-    if (!result?.tahminler || !Array.isArray(result.tahminler) || result.tahminler.length === 0) {
-      return res.status(502).json({
-        error: 'AI modeli beklenen formatta yanıt vermedi (tahminler listesi eksik).',
-        raw: result,
+    // ── 1. ADIM: Yerel piksel karsilastirma ─────────────────────────────────
+    let localMatch = null;
+    try {
+      localMatch = await matchFont(jpegBuffer, ocrText);
+    } catch (e) {
+      console.warn('[FontMatcher] hata:', e.message);
+    }
+
+    // Yuksek guven → AI'a gitmeden don
+    if (localMatch?.matched) {
+      console.log(`[analyze] Yerel eslesme: ${localMatch.result.tahminler[0].font_adi} (${localMatch.topScore.toFixed(2)})`);
+      return res.json({
+        provider: 'local',
+        source:   'pixel-match',
+        result:   localMatch.result,
       });
     }
 
-    return res.json({ provider, result });
+    // ── 2. ADIM: AI analizi ──────────────────────────────────────────────────
+    const base64Image = jpegBuffer.toString('base64');
+    let result;
+
+    try {
+      if (provider === 'gemini') {
+        result = await analyzeWithGemini(base64Image, 'image/jpeg');
+      } else {
+        result = await analyzeWithGroq(base64Image, 'image/jpeg');
+      }
+    } catch (aiErr) {
+      // AI basarisiz → dusuk guvenli yerel sonucu kullan (varsa)
+      if (localMatch?.result) {
+        console.warn('[analyze] AI basarisiz, yerel sonuc kullaniliyor:', aiErr.message);
+        return res.json({
+          provider: 'local-fallback',
+          source:   'pixel-match-fallback',
+          result:   localMatch.result,
+        });
+      }
+      throw aiErr;
+    }
+
+    // ── Yanit dogrulama ──────────────────────────────────────────────────────
+    if (!result?.tahminler || !Array.isArray(result.tahminler) || result.tahminler.length === 0) {
+      return res.status(502).json({
+        error: 'AI modeli beklenen formatta yanit vermedi.',
+        raw:   result,
+      });
+    }
+
+    return res.json({ provider, source: 'ai', result });
 
   } catch (err) {
     console.error('[/api/analyze]', err.message);
-    const status = err.message.includes('API hatası') ? 502 : 500;
+    const status = err.message.includes('API hatasi') ? 502 : 500;
     return res.status(status).json({ error: err.message });
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
 // GET /api/providers
-// ─────────────────────────────────────────────────────────────────────────────
 router.get('/providers', (_req, res) => {
   res.json({
     gemini: !!process.env.GEMINI_API_KEY,
