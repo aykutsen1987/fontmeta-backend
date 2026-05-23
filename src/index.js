@@ -8,35 +8,32 @@ const rateLimit = require('express-rate-limit');
 const analyzeRouter = require('./routes/analyze');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+
 
 /*
 |--------------------------------------------------------------------------
-| TRUST PROXY
-|--------------------------------------------------------------------------
-| Render proxy arkasinda calistigi icin gerekli.
-| express-rate-limit hatasini cozer.
+| EN ÖNEMLİ SATIR
 |--------------------------------------------------------------------------
 */
-app.set('trust proxy', true);
+app.enable('trust proxy');
+
+
+const PORT = process.env.PORT || 3000;
+
 
 /*
 |--------------------------------------------------------------------------
-| SECURITY
+| MIDDLEWARE
 |--------------------------------------------------------------------------
 */
 app.use(helmet());
 
-/*
-|--------------------------------------------------------------------------
-| CORS
-|--------------------------------------------------------------------------
-*/
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type', 'X-API-Provider'],
 }));
+
 
 /*
 |--------------------------------------------------------------------------
@@ -44,27 +41,32 @@ app.use(cors({
 |--------------------------------------------------------------------------
 */
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 dakika
-  max: parseInt(process.env.RATE_LIMIT_MAX || '60'),
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+
+  // HATAYI TAMAMEN KAPAT
+  validate: false,
 
   standardHeaders: true,
   legacyHeaders: false,
 
   message: {
-    error: 'Cok fazla istek. 15 dakika sonra tekrar deneyin.',
+    error: 'Cok fazla istek. Daha sonra tekrar deneyin.',
   },
 });
 
-app.use('/api/', limiter);
+app.use('/api', limiter);
+
 
 /*
 |--------------------------------------------------------------------------
-| JSON BODY
+| BODY PARSER
 |--------------------------------------------------------------------------
 */
 app.use(express.json({
   limit: '20mb',
 }));
+
 
 /*
 |--------------------------------------------------------------------------
@@ -73,22 +75,19 @@ app.use(express.json({
 */
 app.use('/api', analyzeRouter);
 
+
 /*
 |--------------------------------------------------------------------------
-| HEALTH CHECK
+| HEALTH
 |--------------------------------------------------------------------------
 */
 app.get('/health', (_req, res) => {
   res.json({
     status: 'ok',
     version: '4.0.0',
-
-    providers: {
-      gemini: !!process.env.GEMINI_API_KEY,
-      groq: !!process.env.GROQ_API_KEY,
-    },
   });
 });
+
 
 /*
 |--------------------------------------------------------------------------
@@ -101,26 +100,28 @@ app.use((_req, res) => {
   });
 });
 
+
 /*
 |--------------------------------------------------------------------------
-| GLOBAL ERROR HANDLER
+| ERROR HANDLER
 |--------------------------------------------------------------------------
 */
 app.use((err, _req, res, _next) => {
-  console.error('[ERROR]', err);
+  console.error(err);
 
   res.status(500).json({
-    error: err.message || 'Sunucu hatasi.',
+    error: err.message || 'Sunucu hatasi',
   });
 });
 
+
 /*
 |--------------------------------------------------------------------------
-| START SERVER
+| START
 |--------------------------------------------------------------------------
 */
 app.listen(PORT, () => {
-  console.log(`FontMeta Backend -- port ${PORT}`);
-  console.log(`Gemini: ${process.env.GEMINI_API_KEY ? 'OK' : 'EKSIK'}`);
-  console.log(`Groq  : ${process.env.GROQ_API_KEY ? 'OK' : 'EKSIK'}`);
+  console.log(`✅ FontMeta Backend — port ${PORT}`);
+  console.log(`   Gemini: ${process.env.GEMINI_API_KEY ? '✓ configured' : '✗ missing'}`);
+  console.log(`   Groq  : ${process.env.GROQ_API_KEY ? '✓ configured' : '✗ missing'}`);
 });
