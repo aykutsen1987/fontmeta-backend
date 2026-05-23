@@ -8,6 +8,9 @@ const analyzeRouter = require('./routes/analyze');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Render proxy arkasinda calistigimiz icin trust proxy gerekli
+app.set('trust proxy', 1);
+
 // ── Security middleware ────────────────────────────────────────────────────
 app.use(helmet());
 app.use(cors({
