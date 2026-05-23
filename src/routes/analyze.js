@@ -64,7 +64,7 @@ router.post('/analyze', upload.single('image'), async (req, res) => {
 
     // Yuksek guven → AI'a gitmeden don
     if (localMatch?.matched) {
-      console.log(`[analyze] Yerel eslesme: ${localMatch.result.tahminler[0].font_adi} (${localMatch.topScore.toFixed(2)})`);
+      console.log(`[analyze] Yapısal eşleşme: ${localMatch.result.tahminler[0].font_adi} (skor: ${(localMatch.topScore * 100).toFixed(1)}%)`);
       return res.json({
         provider: 'local',
         source:   'pixel-match',
