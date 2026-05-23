@@ -8,59 +8,50 @@ const analyzeRouter = require('./routes/analyze');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Render proxy arkasinda calistigimiz icin trust proxy gerekli
+// Render proxy arkasinda -- trust proxy olmadan rate-limit hata verir
 app.set('trust proxy', 1);
 
-// ── Security middleware ────────────────────────────────────────────────────
 app.use(helmet());
 app.use(cors({
-  origin: '*', // Android app can come from any IP
+  origin: '*',
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type', 'X-API-Provider'],
 }));
 
-// ── Rate limiting ──────────────────────────────────────────────────────────
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: parseInt(process.env.RATE_LIMIT_MAX || '30'),
+  windowMs: 15 * 60 * 1000,
+  max: parseInt(process.env.RATE_LIMIT_MAX || '60'),
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Çok fazla istek gönderildi. 15 dakika sonra tekrar deneyin.' },
+  message: { error: 'Cok fazla istek. 15 dakika sonra tekrar deneyin.' },
 });
 app.use('/api/', limiter);
 
-// ── Body parsing ───────────────────────────────────────────────────────────
 app.use(express.json({ limit: '20mb' }));
-
-// ── Routes ─────────────────────────────────────────────────────────────────
 app.use('/api', analyzeRouter);
 
-// ── Health check ───────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => {
   res.json({
     status: 'ok',
-    version: '1.0.0',
+    version: '4.0.0',
     providers: {
       gemini: !!process.env.GEMINI_API_KEY,
-      groq: !!process.env.GROQ_API_KEY,
+      groq:   !!process.env.GROQ_API_KEY,
     },
   });
 });
 
-// ── 404 handler ────────────────────────────────────────────────────────────
 app.use((_req, res) => {
-  res.status(404).json({ error: 'Endpoint bulunamadı.' });
+  res.status(404).json({ error: 'Endpoint bulunamadi.' });
 });
 
-// ── Global error handler ───────────────────────────────────────────────────
 app.use((err, _req, res, _next) => {
   console.error('[ERROR]', err);
-  res.status(500).json({ error: err.message || 'Sunucu hatası oluştu.' });
+  res.status(500).json({ error: err.message || 'Sunucu hatasi.' });
 });
 
-// ── Start ──────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`✅ FontMeta Backend — port ${PORT}`);
-  console.log(`   Gemini: ${process.env.GEMINI_API_KEY ? '✓ configured' : '✗ missing GEMINI_API_KEY'}`);
-  console.log(`   Groq  : ${process.env.GROQ_API_KEY   ? '✓ configured' : '✗ missing GROQ_API_KEY'}`);
+  console.log(`FontMeta Backend -- port ${PORT}`);
+  console.log(`Gemini: ${process.env.GEMINI_API_KEY ? 'OK' : 'EKSIK'}`);
+  console.log(`Groq  : ${process.env.GROQ_API_KEY   ? 'OK' : 'EKSIK'}`);
 });
