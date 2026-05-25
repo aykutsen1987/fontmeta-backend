@@ -2,7 +2,7 @@ services:
   - type: web
     name: fontmeta-backend
     env: node
-    buildCommand: npm install
+    buildCommand: npm install && node scripts/download-fonts.js
     startCommand: node src/index.js
     envVars:
       - key: NODE_ENV
