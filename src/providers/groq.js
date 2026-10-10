@@ -4,9 +4,8 @@ const { FONT_ANALYSIS_PROMPT } = require('../prompt');
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
 const GROQ_MODELS = [
-  'meta-llama/llama-4-maverick-17b-128e-instruct',
-  'meta-llama/llama-4-scout-17b-16e-instruct',
-];
+  'qwen/qwen3.8-27b',
+  ];
 
 /**
  * v5 DEĞİŞİKLİKLER:
